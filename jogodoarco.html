@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arco e flecha</title>
+<style>
+:root{--bg:#f4f3ee;--fg:#1b1b1a;--muted:#5f5e5a;--card:#fff;--bd:#d8d6cd}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1a;--fg:#f0efec;--muted:#a8a7a0;--card:#262624;--bd:#3a3a37}}
+:root[data-theme="dark"]{--bg:#1b1b1a;--fg:#f0efec;--muted:#a8a7a0;--card:#262624;--bd:#3a3a37}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto}
+h1{font-size:20px;font-weight:500;margin:0 0 12px}
+#hud{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px}
+.k{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 12px}
+.k small{display:block;color:var(--muted);font-size:12px}
+.k b{font-size:20px;font-weight:500}
+canvas{width:100%;height:auto;display:block;border-radius:8px;border:1px solid var(--bd);touch-action:none;cursor:crosshair;background:#bfe3ff}
+p{color:var(--muted);font-size:13px;margin:10px 0 0}
+button{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 14px;cursor:pointer}
+button:focus-visible{outline:2px solid #2a78d6;outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Arco e flecha</h1>
+  <div id="hud">
+    <div class="k"><small>Pontos</small><b id="hs">0</b></div>
+    <div class="k"><small>Flechas</small><b id="hf">10</b></div>
+    <div class="k"><small>Vento</small><b id="hw">0</b></div>
+    <div class="k"><small>Distância</small><b id="hd">0 m</b></div>
+    <div class="k"><small>Recorde</small><b id="hb">0</b></div>
+  </div>
+  <canvas id="c" width="800" height="450" aria-label="Jogo de arco e flecha"></canvas>
+  <p>Clique (ou toque) e arraste para trás para esticar o arco e mirar. Solte para atirar. A linha pontilhada mostra a trajetória sem vento. Tecla R reinicia.</p>
+  <p><button id="rst">Reiniciar</button></p>
+</main>
+<script>
+// ---------- Configuração (ajuste aqui) ----------
+const W = 800, H = 450;      // tamanho interno do canvas
+const GY = 385;              // altura do chão
+const AX = 100;              // posição X do arqueiro
+const BX = AX + 22, BY = GY - 72; // centro do arco
+const G = 700;               // gravidade (px/s²)
+const WIND_FORCE = 25;       // quanto o vento empurra a flecha
+const R = 44;                // raio do alvo (px)
+const TOTAL = 10;            // flechas por partida
+const MAX_PULL = 150;        // arrasto (px) para força máxima
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+cv.width = W * dpr; cv.height = H * dpr; ctx.scale(dpr, dpr);
+
+let S, best = 0;
+
+// ---------- Estado do jogo ----------
+function newGame() {
+  S = { state: 'aim', score: 0, shots: 0, wind: 0, t: 0, arrow: null, stuck: [], pop: null, pull: null, tgt: null, wait: 0 };
+  nextRound();
+}
+function nextRound() {
+  const r = S.shots;
+  S.tgt = { x: 480 + Math.random() * 260, by: 240 + Math.random() * 80,
+            amp: r >= 5 ? 25 + r * 3 : 0, sp: 1.2 + r * 0.12, ph: Math.random() * 6 };
+  S.wind = Math.round((Math.random() * 10 - 5) * 10) / 10;
+  S.stuck = []; S.arrow = null; S.pull = null; S.state = 'aim';
+}
+const ty = () => S.tgt.by + S.tgt.amp * Math.sin(S.t * S.tgt.sp + S.tgt.ph);
+
+// ---------- Entrada (mouse e toque) ----------
+const pos = e => { const b = cv.getBoundingClientRect(); return { x: (e.clientX - b.left) * W / b.width, y: (e.clientY - b.top) * H / b.height }; };
+function aim() {
+  if (!S.pull) return { ang: -0.25, power: 0 };
+  const vx = S.pull.o.x - S.pull.p.x, vy = S.pull.o.y - S.pull.p.y;
+  return { ang: Math.max(-1.3, Math.min(0.5, Math.atan2(vy, Math.max(vx, 1)))), power: Math.min(Math.hypot(vx, vy) / MAX_PULL, 1) };
+}
+cv.addEventListener('pointerdown', e => {
+  if (S.state === 'over') { newGame(); return; }
+  if (S.state !== 'aim') return;
+  cv.setPointerCapture(e.pointerId);
+  S.pull = { o: pos(e), p: pos(e) };
+});
+cv.addEventListener('pointermove', e => { if (S.pull) S.pull.p = pos(e); });
+cv.addEventListener('pointerup', () => {
+  if (!S.pull) return;
+  const q = aim(); S.pull = null;
+  if (q.power > 0.1 && S.state === 'aim') fire(q);
+});
+cv.addEventListener('pointercancel', () => { S.pull = null; });
+document.addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') newGame(); });
+document.getElementById('rst').addEventListener('click', newGame);
+
+// ---------- Física ----------
+function fire(q) {
+  const sp = 280 + 640 * q.power;
+  S.arrow = { x: BX, y: BY, px: BX, py: BY, vx: Math.cos(q.ang) * sp, vy: Math.sin(q.ang) * sp };
+  S.state = 'fly';
+}
+function finish(text, pts, color, x, y) {
+  S.shots++; S.score += pts; S.arrow = null;
+  S.pop = { txt: text, c: color, x, y, life: 1.2 };
+  S.state = 'wait'; S.wait = 1.1;
+}
+function step(dt) {
+  const a = S.arrow, t = S.tgt;
+  for (let i = 0; i < 3; i++) {
+    const h = dt / 3;
+    a.px = a.x; a.py = a.y;
+    a.vx += S.wind * WIND_FORCE * h; a.vy += G * h;
+    a.x += a.vx * h; a.y += a.vy * h;
+    const ang = Math.atan2(a.vy, a.vx);
+    if (a.px < t.x && a.x >= t.x) {            // cruzou o plano do alvo
+      const k = (t.x - a.px) / (a.x - a.px);
+      const d = a.py + (a.y - a.py) * k - ty();
+      if (Math.abs(d) <= R) {
+        const pts = Math.max(1, 10 - Math.floor(Math.abs(d) / (R / 10)));
+        S.stuck.push({ off: d, ang });
+        finish(pts === 10 ? 'Na mosca! +10' : '+' + pts, pts, pts >= 9 ? '#d9a300' : '#2a78d6', t.x, ty() - R - 10);
+        return;
+      }
+    }
+    if (a.y >= GY) { S.stuck.push({ g: true, x: a.x, ang }); finish('Errou!', 0, '#d9423b', a.x, GY - 40); return; }
+    if (a.x > W + 40) { finish('Errou!', 0, '#d9423b', W - 80, 120); return; }
+  }
+}
+
+// ---------- Desenho ----------
+function hill(col, base, amp, f, ph) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 10) ctx.lineTo(x, base + amp * Math.sin(x * f + ph));
+  ctx.lineTo(W, H); ctx.fill();
+}
+function arrowShape(x, y, a) {                  // (x, y) é a ponta
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.lineCap = 'round';
+  ctx.strokeStyle = '#5b3a1e'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-46, 0); ctx.lineTo(0, 0); ctx.stroke();
+  ctx.fillStyle = '#707070'; ctx.beginPath(); ctx.moveTo(7, 0); ctx.lineTo(-3, -3.5); ctx.lineTo(-3, 3.5); ctx.fill();
+  ctx.strokeStyle = '#d9423b'; ctx.lineWidth = 2; ctx.beginPath();
+  [-46, -39].forEach(p => { ctx.moveTo(p, 0); ctx.lineTo(p - 6, -4); ctx.moveTo(p, 0); ctx.lineTo(p - 6, 4); });
+  ctx.stroke(); ctx.restore();
+}
+function archer(q) {
+  const d = { x: Math.cos(q.ang), y: Math.sin(q.ang) }, pull = 3 + q.power * 28;
+  const T = { x: BX - d.y * 34, y: BY + d.x * 34 }, U = { x: BX + d.y * 34, y: BY - d.x * 34 };
+  const N = { x: BX - d.x * pull, y: BY - d.y * pull };
+  const sh = { x: AX, y: GY - 76 };
+  ctx.lineCap = 'round'; ctx.strokeStyle = '#243040'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(AX - 10, GY); ctx.lineTo(AX, GY - 42); ctx.lineTo(AX + 10, GY);
+  ctx.moveTo(AX, GY - 42); ctx.lineTo(sh.x, sh.y); ctx.lineTo(BX, BY); ctx.moveTo(sh.x, sh.y); ctx.lineTo(N.x, N.y); ctx.stroke();
+  ctx.fillStyle = '#243040'; ctx.beginPath(); ctx.arc(AX, GY - 88, 9, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#6b4423'; ctx.lineWidth = 4.5; ctx.beginPath(); ctx.moveTo(T.x, T.y);
+  ctx.quadraticCurveTo(BX + d.x * (26 - pull * 0.4), BY + d.y * (26 - pull * 0.4), U.x, U.y); ctx.stroke();
+  ctx.strokeStyle = '#4a4a4a'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(T.x, T.y); ctx.lineTo(N.x, N.y); ctx.lineTo(U.x, U.y); ctx.stroke();
+  if (S.state === 'aim') arrowShape(N.x + d.x * 46, N.y + d.y * 46, q.ang);
+}
+function label(txt, x, y, size, color) {
+  ctx.font = '600 ' + size + 'px system-ui,sans-serif'; ctx.textAlign = 'center';
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.strokeText(txt, x, y);
+  ctx.fillStyle = color; ctx.fillText(txt, x, y);
+}
+function draw() {
+  const g = ctx.createLinearGradient(0, 0, 0, GY); g.addColorStop(0, '#8fcaf7'); g.addColorStop(1, '#e6f5ff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff3b0'; ctx.beginPath(); ctx.arc(690, 70, 28, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  [[100, 70, 8], [420, 45, 5], [620, 120, 11]].forEach(c => {
+    const x = (c[0] + S.t * c[2]) % (W + 160) - 80;
+    ctx.beginPath(); ctx.ellipse(x, c[1], 40, 12, 0, 0, 7); ctx.ellipse(x + 24, c[1] - 8, 24, 11, 0, 0, 7); ctx.fill();
+  });
+  hill('#b5d8a8', GY - 60, 22, 0.008, 1); hill('#8fc27e', GY - 25, 14, 0.012, 3);
+  ctx.fillStyle = '#6aa84f'; ctx.fillRect(0, GY, W, H - GY);
+
+  // bandeira de vento
+  const wl = 8 + Math.abs(S.wind) * 6, dir = S.wind >= 0 ? 1 : -1, fl = Math.sin(S.t * 8) * 3;
+  ctx.strokeStyle = '#5b3a1e'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(165, GY); ctx.lineTo(165, GY - 90); ctx.stroke();
+  ctx.fillStyle = '#d9423b'; ctx.beginPath(); ctx.moveTo(165, GY - 90); ctx.lineTo(165 + dir * wl, GY - 84 + fl); ctx.lineTo(165, GY - 74); ctx.fill();
+
+  // alvo
+  const t = S.tgt, y = ty();
+  ctx.strokeStyle = '#7a5a3a'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(t.x, y + R); ctx.lineTo(t.x, GY); ctx.stroke();
+  [['#fff', 1], ['#222', 0.8], ['#2f7fd1', 0.6], ['#d9423b', 0.4], ['#f2c230', 0.2]].forEach(([c, k]) => {
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(t.x, y, 4 + 8 * k, R * k, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1; ctx.stroke();
+  });
+  ctx.font = '12px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#1f3d14';
+  ctx.fillText(Math.round((t.x - AX) / 10) + ' m', t.x, GY + 18);
+  S.stuck.forEach(s => s.g ? arrowShape(s.x, GY, s.ang) : arrowShape(t.x, y + s.off, s.ang));
+
+  // arqueiro, trajetória e flecha em voo
+  const q = aim(); archer(q);
+  if (S.pull && S.state === 'aim' && q.power > 0.1) {
+    const sp = 280 + 640 * q.power, vx = Math.cos(q.ang) * sp, vy = Math.sin(q.ang) * sp;
+    ctx.fillStyle = 'rgba(30,40,60,.7)';
+    for (let i = 1; i <= 12; i++) { const s = i * 0.045; ctx.beginPath(); ctx.arc(BX + vx * s, BY + vy * s + 0.5 * G * s * s, 2.5, 0, 7); ctx.fill(); }
+  }
+  if (S.arrow) arrowShape(S.arrow.x, S.arrow.y, Math.atan2(S.arrow.vy, S.arrow.vx));
+
+  if (S.pop) { ctx.globalAlpha = Math.min(1, S.pop.life); label(S.pop.txt, S.pop.x, S.pop.y - (1.2 - S.pop.life) * 30, 26, S.pop.c); ctx.globalAlpha = 1; }
+  if (S.shots === 0 && S.state === 'aim' && !S.pull) label('Arraste para trás e solte', W / 2, 40, 20, '#243040');
+  if (S.state === 'over') {
+    ctx.fillStyle = 'rgba(20,30,45,.78)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#fff';
+    ctx.font = '600 34px system-ui,sans-serif'; ctx.fillText('Fim de jogo: ' + S.score + ' pontos', W / 2, H / 2 - 10);
+    ctx.font = '18px system-ui,sans-serif'; ctx.fillText('Clique para jogar de novo', W / 2, H / 2 + 28);
+  }
+}
+
+// ---------- Painel (HUD) ----------
+const el = id => document.getElementById(id);
+function hud() {
+  el('hs').textContent = S.score; el('hf').textContent = TOTAL - S.shots;
+  el('hw').textContent = (S.wind > 0 ? '→ ' : S.wind < 0 ? '← ' : '') + Math.abs(S.wind).toFixed(1);
+  el('hd').textContent = Math.round((S.tgt.x - AX) / 10) + ' m'; el('hb').textContent = best;
+}
+
+// ---------- Laço principal ----------
+let last = 0;
+function loop(ts) {
+  const dt = Math.min((ts - last) / 1000 || 0, 1 / 30); last = ts; S.t += dt;
+  if (S.state === 'fly') step(dt);
+  else if (S.state === 'wait') {
+    S.wait -= dt;
+    if (S.wait <= 0) { if (S.shots >= TOTAL) { S.state = 'over'; best = Math.max(best, S.score); } else nextRound(); }
+  }
+  if (S.pop) { S.pop.life -= dt; if (S.pop.life <= 0) S.pop = null; }
+  draw(); hud(); requestAnimationFrame(loop);
+}
+newGame(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
